@@ -11,6 +11,7 @@ import pastas.timeseries_utils as ts
 from .decorators import set_use_numba
 from .model import Model
 from .modelcompare import CompareModels
+from .modflow import ModflowRch
 from .noisemodels import ArmaModel, NoiseModel
 from .plots import TrackSolve
 from .rcparams import rcParams
@@ -36,6 +37,7 @@ from .stressmodels import (
     StressModel,
     TarsoModel,
     WellModel,
+    ModflowModel,
 )
 from .timeseries import validate_oseries, validate_stress
 from .transform import ThresholdTransform

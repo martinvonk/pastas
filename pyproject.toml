@@ -46,7 +46,7 @@ repository = "https://github.com/pastas/pastas"
 documentation = "https://pastas.readthedocs.io/en/latest/"
 
 [project.optional-dependencies]
-full = ["lmfit >= 1.0.0", "latexify-py"]
+full = ["lmfit >= 1.0.0", "latexify-py", "flopy"]
 formatting = ["isort", "black[jupyter]"]
 linting = ["flake8"]
 pytesting = ["pytest>=7", "pytest-cov", "pytest-sugar"]
