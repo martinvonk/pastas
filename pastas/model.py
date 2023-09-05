@@ -19,13 +19,12 @@ from pandas import (
     Timestamp,
     concat,
     date_range,
-    to_timedelta,
 )
 
 # Internal Pastas
 from pastas.decorators import get_stressmodel
 from pastas.io.base import _load_model, dump
-from pastas.modelplots import Plotting
+from pastas.modelplots import Plotting, _table_formatter_stderr
 from pastas.modelstats import Statistics
 from pastas.noisemodels import NoiseModel
 from pastas.solver import LeastSquares
@@ -104,7 +103,16 @@ class Model:
         self.name = validate_name(name)
 
         self.parameters = DataFrame(
-            columns=["initial", "name", "optimal", "pmin", "pmax", "vary", "stderr"]
+            columns=[
+                "initial",
+                "name",
+                "optimal",
+                "pmin",
+                "pmax",
+                "vary",
+                "stderr",
+                "dist",
+            ]
         )
 
         # Define the model components
@@ -118,11 +126,7 @@ class Model:
             "tmin": None,
             "tmax": None,
             "freq": freq,
-            "warmup": (
-                Timedelta(3650, "D") / Timedelta(freq) * to_timedelta(freq)
-                if freq[0].isdigit()
-                else Timedelta(3650, freq)
-            ),
+            "warmup": Timedelta(3650, "D"),
             "time_offset": Timedelta(0),
             "noise": noisemodel,
             "solver": None,
@@ -164,7 +168,9 @@ class Model:
             noise=True if self.noisemodel else False,
         )
 
-    def add_stressmodel(self, stressmodel: StressModel, replace: bool = False) -> None:
+    def add_stressmodel(
+        self, stressmodel: Union[StressModel, List[StressModel]], replace: bool = False
+    ) -> None:
         """Add a stressmodel to the main model.
 
         Parameters
@@ -417,7 +423,11 @@ class Model:
 
         if sim.hasnans:
             sim = sim.dropna()
-            msg = "Simulation contains Nan-values. Check stresses time series settings!"
+            msg = (
+                "Simulation contains NaN-values. Check if time series settings "
+                "are provided for each stress model "
+                "(e.g. `ps.StressModel(stress, settings='prec')`!"
+            )
             self.logger.error(msg)
             raise ValueError(msg)
 
@@ -799,7 +809,7 @@ class Model:
         if solver is not None:
             self.fit = solver
             self.fit.set_model(self)
-        # Create the default solver is None is provided or already present
+        # Create the default solver if None is provided or already present
         elif self.fit is None:
             self.fit = LeastSquares()
             self.fit.set_model(self)
@@ -838,6 +848,7 @@ class Model:
         pmin: Optional[float] = None,
         pmax: Optional[float] = None,
         optimal: Optional[float] = None,
+        dist: Optional[str] = None,
         move_bounds: bool = False,
     ) -> None:
         """Method to change the parameter properties.
@@ -856,6 +867,8 @@ class Model:
             maximum value for the parameter.
         optimal: float, optional
             optimal value for the parameter.
+        dist: str, optional
+            Distribution of the parameters.
         move_bounds: bool, optional
             Reset pmin/pmax based on new initial value. Of move_bounds=True, pmin and
             pmax must be None.
@@ -916,6 +929,9 @@ class Model:
         if pmax is not None:
             obj._set_pmax(name, pmax)
             self.parameters.loc[name, "pmax"] = pmax
+        if dist is not None:
+            obj._set_dist(name, dist)
+            self.parameters.loc[name, "dist"] = dist
         if optimal is not None:
             self.parameters.loc[name, "optimal"] = optimal
 
@@ -1167,6 +1183,7 @@ class Model:
         if not initial:
             parameters.initial.update(self.parameters.optimal)
             parameters.optimal.update(self.parameters.optimal)
+            parameters.stderr.update(self.parameters.stderr)
 
         return parameters
 
@@ -1550,7 +1567,11 @@ class Model:
 
     @get_stressmodel
     def get_response_tmax(
-        self, name: str, p: ArrayLike = None, cutoff: float = 0.999
+        self,
+        name: str,
+        p: ArrayLike = None,
+        cutoff: float = 0.999,
+        warn: bool = True,
     ) -> Union[float, None]:
         """Method to get the tmax used for the response function.
 
@@ -1584,7 +1605,11 @@ class Model:
         else:
             if p is None:
                 p = self.get_parameters(name)
-            tmax = self.stressmodels[name].rfunc.get_tmax(p=p, cutoff=cutoff)
+            if self.stressmodels[name].rfunc._name == "HantushWellModel":
+                kwargs = {"warn": warn}
+            else:
+                kwargs = {}
+            tmax = self.stressmodels[name].rfunc.get_tmax(p=p, cutoff=cutoff, **kwargs)
             return tmax
 
     @get_stressmodel
@@ -1745,7 +1770,9 @@ class Model:
 
         parameters = self.parameters.loc[:, ["optimal", "stderr", "initial", "vary"]]
         stderr = parameters.loc[:, "stderr"] / parameters.loc[:, "optimal"]
-        parameters.loc[:, "stderr"] = stderr.abs().apply("±{:.2%}".format)
+        parameters.loc[:, "stderr"] = "±" + stderr.abs().apply(
+            _table_formatter_stderr, na_rep="nan"
+        )
 
         # Determine the width of the fit_report based on the parameters
         width = len(parameters.to_string().split("\n")[1])
@@ -1858,8 +1885,12 @@ class Model:
         check["len_oseries_calib"] = len_oseries_calib
 
         for sm_name in self.stressmodels:
+            if self.stressmodels[sm_name].rfunc._name == "HantushWellModel":
+                kwargs = {"warn": False}
+            else:
+                kwargs = {}
             check.loc[sm_name, "response_tmax"] = self.get_response_tmax(
-                sm_name, cutoff=cutoff
+                sm_name, cutoff=cutoff, **kwargs
             )
 
         check["check_ok"] = check["response_tmax"] < check["len_oseries_calib"]

@@ -35,8 +35,8 @@ extensions = [
     "sphinx.ext.ifconfig",
     "sphinx.ext.viewcode",
     "IPython.sphinxext.ipython_console_highlighting",  # lowercase didn't work
-    "nbsphinx",
     "numpydoc",
+    "myst_nb",
     "sphinxcontrib.bibtex",
     "sphinx_design",
     "sphinx.ext.autosectionlabel",
@@ -52,7 +52,7 @@ master_doc = "index"  # The master toctree document.
 
 # General information about the project.
 project = "Pastas"
-copyright = "{}, R.A. Collenteur, M. Bakker, R. Calje, F. Schaars".format(year)
+copyright = "{}, The Pastas Team".format(year)
 author = "R.A. Collenteur, M. Bakker, R. Calje, F. Schaars"
 
 # The version.
@@ -91,6 +91,14 @@ html_theme_options = {
     "github_url": "https://github.com/pastas/pastas",
     "use_edit_page_button": True,
     "header_links_before_dropdown": 6,
+    "icon_links": [
+        {
+            "name": "GitHub",  # Label for this link
+            "url": "https://github.com/pastas/pastas",  # required
+            "icon": "fab fa-github-square",
+            "type": "fontawesome",  # Default is fontawesome
+        }
+    ],
 }
 
 html_context = {
@@ -162,7 +170,7 @@ intersphinx_mapping = {
     "matplotlib": ("https://matplotlib.org/stable", None),
 }
 
-# -- nbsphinx options---------- -------------------------------------------------------
+# -- myst_nb options ------------------------------------------------------------------
 
-nbsphinx_allow_errors = True  # Allow errors in notebooks, to see the error online
-nbsphinx_execute = "auto"
+nb_execution_allow_errors = True  # Allow errors in notebooks, to see the error online
+nb_execution_mode = "auto"

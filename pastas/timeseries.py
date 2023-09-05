@@ -8,7 +8,7 @@ from pandas import Series
 from pandas.tseries.frequencies import to_offset
 
 from .rcparams import rcParams
-from .timeseries_utils import _get_dt, _get_time_offset
+from .timeseries_utils import _get_dt, _get_time_offset, _infer_fixed_freq, resample
 from .utils import validate_name
 
 logger = getLogger(__name__)
@@ -75,15 +75,15 @@ class TimeSeries:
                 if settings["fill_nan"] == "drop":
                     raise UserWarning(
                         "The fill_nan setting 'drop' for a stress is not allowed "
-                        "because the stress time series  need to be equidistant. "
+                        "because the stress time series need to be equidistant. "
                         "Please change this."
                     )
             validate_stress(series)
 
         # Store a copy of the original series
         self._series_original = series.copy()  # copy of the original series
-        self._series = None  #
-        self.freq_original = pd.infer_freq(self._series_original.index)
+        self._series = None
+        self.freq_original = _infer_fixed_freq(self._series_original.index)
         self.settings = {
             "freq": self.freq_original,
             "sample_up": None,
@@ -91,8 +91,8 @@ class TimeSeries:
             "fill_nan": "interpolate",
             "fill_before": None,
             "fill_after": None,
-            "tmin": series.index.min(),
-            "tmax": series.index.max(),
+            "tmin": series.first_valid_index(),
+            "tmax": series.last_valid_index(),
             "time_offset": pd.Timedelta(0),
         }
         self.metadata = {"x": 0.0, "y": 0.0, "z": 0.0, "projection": None}
@@ -292,10 +292,10 @@ class TimeSeries:
                 success = False
 
         if success:
-            logger.info("Time Series %s were sampled up using %s.", self.name, method)
+            logger.info("Time Series '%s' were sampled up using %s.", self.name, method)
         else:
             logger.warning(
-                "Time Series %s: User-defined option for sample_up %s is not "
+                "Time Series '%s': User-defined option for sample_up %s is not "
                 "supported",
                 self.name,
                 method,
@@ -327,20 +327,17 @@ class TimeSeries:
         if self.settings["time_offset"] > pd.Timedelta(0):
             series = series.shift(-1, freq=self.settings["time_offset"])
 
-        # Provide some standard pandas arguments for all options
-        kwargs = {"label": "right", "closed": "right"}
-
         success = True
         if method == "mean":
-            series = series.resample(freq, **kwargs).mean()
+            series = resample(series, freq).mean()
         elif method == "drop":
-            series = series.resample(freq, **kwargs).mean().dropna()
+            series = resample(series, freq).mean().dropna()
         elif method == "sum":
-            series = series.resample(freq, **kwargs).sum()
+            series = resample(series, freq).sum()
         elif method == "min":
-            series = series.resample(freq, **kwargs).min()
+            series = resample(series, freq).min()
         elif method == "max":
-            series = series.resample(freq, **kwargs).max()
+            series = resample(series, freq).max()
         else:
             success = False
 
@@ -351,14 +348,14 @@ class TimeSeries:
 
         if success:
             logger.info(
-                "Time Series %s was sampled down to freq %s with method " "%s.",
+                "Time Series '%s' was sampled down to freq %s with method " "%s.",
                 self.name,
                 freq,
                 method,
             )
         else:
             logger.warning(
-                "Time Series %s: User-defined option for sample down %s is not "
+                "Time Series '%s': User-defined option for sample down %s is not "
                 "supported",
                 self.name,
                 method,
@@ -386,14 +383,14 @@ class TimeSeries:
 
         if success:
             logger.info(
-                "Time Series %s: %s nan-value(s) was/were found and filled with: %s.",
+                "Time Series '%s': %s nan-value(s) was/were found and filled with: %s.",
                 self.name,
                 n,
                 method,
             )
         else:
             logger.warning(
-                "Time Series %s: User-defined option for fill_nan %s is not supported.",
+                "Time Series '%s': User-defined option for fill_nan %s is not supported.",
                 self.name,
                 method,
             )
@@ -425,24 +422,43 @@ class TimeSeries:
                 mean_value = series.mean()
                 series = series.fillna(mean_value)  # Default option
                 logger.info(
-                    "Time Series %s was extended in the past to %s with the mean "
+                    "Time Series '%s' was extended in the past to %s with the mean "
                     "value (%.2g) of the time series.",
                     self.name,
                     series.index.min(),
                     mean_value,
                 )
+            elif method == "bfill":
+                first_value = series.loc[series.first_valid_index()]
+                series = series.fillna(method="bfill")  # Default option
+                logger.info(
+                    "Time Series '%s' was extended in the past to %s with the first "
+                    "value (%.2g) of the time series.",
+                    self.name,
+                    series.index.min(),
+                    first_value,
+                )
             elif isinstance(method, float):
                 series = series.fillna(method)
                 logger.info(
-                    "Time Series %s was extended in the past to %s by adding %s "
+                    "Time Series '%s' was extended in the past to %s by adding %s "
                     "values.",
                     self.name,
                     series.index.min(),
                     method,
                 )
+            elif method is None:
+                msg = (
+                    f"Time Series '{self.name}': cannot be extended into past to"
+                    f" {series.index.min()} as 'fill_before' method is 'None'. "
+                    "Provide settings to stress model, e.g. "
+                    "`ps.StressModel(stress, settings='prec')`."
+                )
+                logger.error(msg)
+                raise ValueError(msg)
             else:
                 logger.info(
-                    "Time Series %s: User-defined option for fill_before '%s' is not "
+                    "Time Series '%s': User-defined option for fill_before '%s' is not "
                     "supported.",
                     self.name,
                     method,
@@ -475,24 +491,43 @@ class TimeSeries:
                 mean_value = series.mean()
                 series = series.fillna(mean_value)  # Default option
                 logger.info(
-                    "Time Series %s was extended in the future to %s with the mean "
+                    "Time Series '%s' was extended in the future to %s with the mean "
                     "value (%.2g) of the time series.",
                     self.name,
                     series.index.max(),
                     mean_value,
                 )
+            elif method == "ffill":
+                last_value = series.loc[series.last_valid_index()]
+                series = series.fillna(method="ffill")
+                logger.info(
+                    "Time Series '%s' was extended in the future to %s with the last "
+                    "value (%.2g) of the time series.",
+                    self.name,
+                    series.index.max(),
+                    last_value,
+                )
             elif isinstance(method, float):
                 series = series.fillna(method)
                 logger.info(
-                    "Time Series %s was extended in the future to %s by adding %s "
+                    "Time Series '%s' was extended in the future to %s by adding %s "
                     "values.",
                     self.name,
                     series.index.max(),
                     method,
                 )
+            elif method is None:
+                msg = (
+                    f"Time Series '{self.name}': cannot be extended into future to"
+                    f" {series.index.max()} as 'fill_after' method is 'None'. "
+                    "Provide settings to stress model, e.g. "
+                    "`ps.StressModel(stress, settings='prec')`."
+                )
+                logger.error(msg)
+                raise ValueError(msg)
             else:
-                logger.info(
-                    "Time Series %s: User-defined option for fill_after '%s' is not "
+                logger.warning(
+                    "Time Series '%s': User-defined option for fill_after '%s' is not "
                     "supported",
                     self.name,
                     method,
@@ -537,6 +572,11 @@ def validate_stress(series: Series):
     series: pandas.Series
         Pandas.Series object containing the series time series.
 
+    Returns
+    -------
+    bool:
+        True if the series is valid. If not, an error is raised.
+
     Notes
     -----
     The Series are validated for the following cases:
@@ -559,7 +599,7 @@ def validate_stress(series: Series):
     >>> ps.validate_stress(series)
 
     """
-    _validate_series(series, equidistant=True)
+    return _validate_series(series, equidistant=True)
 
 
 def validate_oseries(series: Series):
@@ -570,6 +610,11 @@ def validate_oseries(series: Series):
     series: pandas.Series
         Pandas.Series object containing the series time series.
 
+    Returns
+    -------
+    bool:
+        True if the series is valid. If not, an error is raised.
+
     Notes
     -----
     The Series are validated for the following cases:
@@ -578,9 +623,10 @@ def validate_oseries(series: Series):
     1. Make sure the values are floats
     2. Make sure the index is a DatetimeIndex
     3. Make sure the indices are datetime64
-    4. Make sure the index is monotonically increasing
-    5. Make sure there are no duplicate indices
-    6. Make sure the time series has no nan-values
+    4. Make sure the index has no NaT-values
+    5. Make sure the index is monotonically increasing
+    6. Make sure there are no duplicate indices
+    7. Make sure the time series has no nan-values
 
     If any of these checks are not passed the method will throw an error that needs
     to be fixed by the user.
@@ -591,7 +637,7 @@ def validate_oseries(series: Series):
     >>> ps.validate_oseries(series)
 
     """
-    _validate_series(series, equidistant=False)
+    return _validate_series(series, equidistant=False)
 
 
 def _validate_series(series: Series, equidistant: bool = True):
@@ -604,6 +650,11 @@ def _validate_series(series: Series, equidistant: bool = True):
     equidistant: bool, optional
         Whether the time series should have equidistant time step or not.
 
+    Returns
+    -------
+    bool:
+        True if the series is valid. If not, an error is raised.
+
     Notes
     -----
     If any of these checks are not passed the method will throw an error that needs
@@ -614,6 +665,11 @@ def _validate_series(series: Series, equidistant: bool = True):
     if isinstance(series, pd.DataFrame):
         if len(series.columns) == 1:
             series = series.iloc[:, 0]
+        elif len(series.columns) > 1:
+            # helpful specific message for multi-column DataFrames
+            msg = "DataFrame with multiple columns. Please select one."
+            logger.error(msg)
+            raise ValueError(msg)
 
     # 0. Make sure it is a Series and not something else (e.g., DataFrame)
     if not isinstance(series, pd.Series):
@@ -641,7 +697,16 @@ def _validate_series(series: Series, equidistant: bool = True):
         logger.error(msg)
         raise ValueError(msg)
 
-    # 4. Make sure the index is monotonically increasing
+    # 4. Make sure there are no NaT in index
+    if series.index.hasnans:
+        msg = (
+            f"The index of series {name} contains NaNs. "
+            "Try to remove these with `series.loc[series.index.dropna()]`."
+        )
+        logger.error(msg)
+        raise ValueError(msg)
+
+    # 5. Make sure the index is monotonically increasing
     if not series.index.is_monotonic_increasing:
         msg = (
             f"The time-indices of series {name} are not monotonically increasing. Try "
@@ -650,25 +715,26 @@ def _validate_series(series: Series, equidistant: bool = True):
         logger.error(msg)
         raise ValueError(msg)
 
-    # 5. Make sure there are no duplicate indices
+    # 6. Make sure there are no duplicate indices
     if not series.index.is_unique:
         msg = (
             f"duplicate time-indexes were found in the time series {name}. Make sure "
-            f"there are no duplicate indices. For example by "
-            f"`grouped = series.groupby(level=0); series = grouped.mean()`"
+            "there are no duplicate indices. For example by "
+            "`grouped = series.groupby(level=0); series = grouped.mean()`"
+            "or `series = series.loc[~series.index.duplicated(keep='first/last')]`"
         )
         logger.error(msg)
         raise ValueError(msg)
 
-    # 6. Make sure the time series has no nan-values
+    # 7. Make sure the time series has no nan-values
     if series.hasnans:
         msg = (
-            "The time series %s has nan-values. Pastas will use the fill_nan "
+            "The Time Series '%s' has nan-values. Pastas will use the fill_nan "
             "settings to fill up the nan-values."
         )
         logger.warning(msg, name)
 
-    # 7. Make sure the time series has equidistant time steps
+    # 8. Make sure the time series has equidistant time steps
     if equidistant:
         if not pd.infer_freq(series.index):
             msg = (
@@ -677,3 +743,6 @@ def _validate_series(series: Series, equidistant: bool = True):
             )
             logger.error(msg)
             raise ValueError(msg)
+
+    # If all checks are passed, return True
+    return True

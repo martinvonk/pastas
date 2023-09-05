@@ -74,10 +74,12 @@ class StressModelBase:
         self.freq = None
 
         if rfunc is not None:
-            rfunc._update_rfunc_settings(up=up, gain_scale_factor=gain_scale_factor)
+            rfunc.update_rfunc_settings(up=up, gain_scale_factor=gain_scale_factor)
         self.rfunc = rfunc
 
-        self.parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        self.parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
 
         self.stress = []
 
@@ -127,6 +129,16 @@ class StressModelBase:
         The preferred method for parameter setting is through the model.
         """
         self.parameters.loc[name, "vary"] = bool(value)
+
+    @set_parameter
+    def _set_dist(self, name: str, value: str) -> None:
+        """Internal method to set distribution of prior of the parameter.
+
+        Notes
+        -----
+        The preferred method for parameter setting is through the model.
+        """
+        self.parameters.loc[name, "dist"] = str(value)
 
     def update_stress(
         self,
@@ -425,6 +437,7 @@ class StepModel(StressModelBase):
             tmax,
             False,
             self.name,
+            "uniform",
         )
 
     def simulate(
@@ -509,15 +522,30 @@ class LinearTrend(StressModelBase):
         tmin = Timestamp.min.toordinal()
         tmax = Timestamp.max.toordinal()
 
-        self.parameters.loc[self.name + "_a"] = (0.0, -np.inf, np.inf, True, self.name)
+        self.parameters.loc[self.name + "_a"] = (
+            0.0,
+            -np.inf,
+            np.inf,
+            True,
+            self.name,
+            "uniform",
+        )
         self.parameters.loc[self.name + "_tstart"] = (
             start,
             tmin,
             tmax,
             False,
             self.name,
+            "uniform",
         )
-        self.parameters.loc[self.name + "_tend"] = (end, tmin, tmax, False, self.name)
+        self.parameters.loc[self.name + "_tend"] = (
+            end,
+            tmin,
+            tmax,
+            False,
+            self.name,
+            "uniform",
+        )
 
     def simulate(
         self,
@@ -595,6 +623,7 @@ class Constant(StressModelBase):
             np.nan,
             True,
             self.name,
+            "uniform",
         )
 
     @staticmethod
@@ -625,21 +654,25 @@ class WellModel(StressModelBase):
     ----------
     stress: list
         list containing the stresses time series.
-    rfunc: pastas.rfunc instance
-        this model only works with the HantushWellModel response function.
     name: str
-        Name of the stressmodel.
+        name of the stressmodel.
     distances: array_like
-        list of distances to oseries, must be ordered the same as the stresses.
+        array_like of distances between the stresses (wells) and the oseries
+        (monitoring well), must be in the same order as the stresses. This
+        distance is used to scale the HantushWellModel response function for
+        each stress.
+    rfunc: pastas.rfunc instance, optional
+        this model only works with the HantushWellModel response function, default is
+        None which will initialize a HantushWellModel response function.
     up: bool, optional
         whether a positive stress has an increasing or decreasing effect on the model,
         by default False, in which case positive stress lowers e.g., the groundwater
         level.
     settings: str, list of dict, optional
-        The settings of the stress. This can be a string referring to a predefined
-        settings dict (defined in ps.rcParams["timeseries"]), or a dict with the
-        settings to apply. Refer to the docs of pastas.Timeseries for further
-        information.
+        The settings of the stress. By default this is "well". This can be a string
+        referring to a predefined settings dict (defined in
+        ps.rcParams["timeseries"]), or a dict with the settings to apply. Refer
+        to the docs of pastas.Timeseries for further information.
     sort_wells: bool, optional
         sort wells from closest to furthest, by default True.
 
@@ -650,9 +683,7 @@ class WellModel(StressModelBase):
     model. The distance(s) from the pumping well(s) to the monitoring well have to be
     provided for each stress.
 
-    Warnings
-    --------
-    This model only works with the HantushWellModel response function.
+    Only works with the HantushWellModel response function.
     """
 
     _name = "WellModel"
@@ -660,42 +691,23 @@ class WellModel(StressModelBase):
     def __init__(
         self,
         stress: List[Series],
-        rfunc: RFunc,
         name: str,
         distances: ArrayLike,
+        rfunc: Optional[RFunc] = None,
         up: bool = False,
         settings: str = "well",
         sort_wells: bool = True,
         metadata: Optional[list] = None,
     ) -> None:
-        if not isinstance(rfunc, HantushWellModel):
+        # check response function
+        if rfunc is None:
+            rfunc = HantushWellModel()
+        elif not isinstance(rfunc, HantushWellModel):
             raise NotImplementedError(
                 "WellModel only supports the rfunc HantushWellModel!"
             )
 
-        # sort wells by distance
-        self.sort_wells = sort_wells
-        if self.sort_wells:
-            stress = [
-                s for _, s in sorted(zip(distances, stress), key=lambda pair: pair[0])
-            ]
-            if isinstance(settings, list):
-                settings = [
-                    s
-                    for _, s in sorted(
-                        zip(distances, settings), key=lambda pair: pair[0]
-                    )
-                ]
-
-            distances = np.sort(distances)
-
-        if settings is None or isinstance(settings, str) or isinstance(settings, dict):
-            settings = len(stress) * [settings]
-
-        # convert stresses to TimeSeries if necessary
-        stress = self._handle_stress(stress, settings)
-
-        # Check if number of stresses and distances match
+        # check if number of stresses and distances match
         if len(stress) != len(distances):
             msg = (
                 "The number of stresses does not match the number of distances "
@@ -705,9 +717,31 @@ class WellModel(StressModelBase):
             raise ValueError(msg)
         else:
             self.distances = Series(
-                index=[s.name for s in stress], data=distances, name="distances"
+                index=[s.squeeze().name for s in stress],
+                data=distances,
+                name="distances",
             )
 
+        # parse settings input
+        if settings is None or isinstance(settings, str) or isinstance(settings, dict):
+            settings = len(stress) * [settings]
+
+        # if metadata is passed as dict -> convert to list
+        if metadata is not None and isinstance(metadata, dict):
+            metadata = [metadata]
+
+        # parse stresses input
+        stress = self._handle_stress(stress, settings, metadata)
+
+        # sort wells by distance
+        self.sort_wells = sort_wells
+        if self.sort_wells:
+            stress = [
+                s for _, s in sorted(zip(distances, stress), key=lambda pair: pair[0])
+            ]
+            self.distances.sort_values(inplace=True)
+
+        # estimate gain_scale_factor w/ max of stresses stdev
         gain_scale_factor = np.max([s.series.std() for s in stress])
 
         tmin = np.min([s.series.index.min() for s in stress])
@@ -766,7 +800,7 @@ class WellModel(StressModelBase):
         return h
 
     @staticmethod
-    def _handle_stress(stress, settings):
+    def _handle_stress(stress, settings, metadata):
         """Internal method to handle user provided stress in init.
 
         Parameters
@@ -775,24 +809,39 @@ class WellModel(StressModelBase):
             stress or collection of stresses.
         settings: dict or iterable
             settings dictionary.
+        metadata : dict or list of dict
+            metadata dictionaries corresponding to stress
 
         Returns
         -------
         stress: list
-            return a list with the stresses transformed to pastas.TimeSeries.
+            return a list with the stresses transformed to pastas TimeSeries.
         """
         data = []
 
         if isinstance(stress, Series):
-            data.append(TimeSeries(stress, settings=settings))
+            data.append(TimeSeries(stress, settings=settings, metadata=metadata))
         elif isinstance(stress, dict):
             for i, (name, value) in enumerate(stress.items()):
-                data.append(TimeSeries(value, name=name, settings=settings[i]))
+                if metadata is not None:
+                    imeta = metadata[i]
+                else:
+                    imeta = None
+                data.append(
+                    TimeSeries(value, name=name, settings=settings[i], metadata=imeta)
+                )
         elif isinstance(stress, list):
             for i, value in enumerate(stress):
-                data.append(TimeSeries(value, settings=settings[i]))
+                if metadata is not None:
+                    imeta = metadata[i]
+                else:
+                    imeta = None
+                data.append(TimeSeries(value, settings=settings[i], metadata=imeta))
         else:
-            logger.error("Stress format is unknown. Provide a Series, dict or list.")
+            msg = "Cannot parse 'stress' input. Provide a Series, dict or list."
+            logger.error(msg)
+            raise TypeError(msg)
+
         return data
 
     def get_stress(
@@ -972,9 +1021,12 @@ class RechargeModel(StressModelBase):
     ----------
     prec: pandas.Series
         pandas.Series with pandas.DatetimeIndex containing the precipitation series.
+        The precipitation series should be provided in mm/day when a nonlinear model is
+        used.
     evap: pandas.Series
         pandas.Series with pandas.DatetimeIndex containing the potential evaporation
-        series.
+        series. The evaporation series should be provided in mm/day when a nonlinear
+        model is used.
     rfunc: pastas.rfunc instance, optional
         Instance of the response function used in the convolution with the stress.
         Default is ps.Exponential().
@@ -985,7 +1037,8 @@ class RechargeModel(StressModelBase):
         These can be accessed through ps.rch. Default is ps.rch.Linear().
     temp: pandas.Series, optional
         pandas.Series with pandas.DatetimeIndex containing the temperature series.
-        It depends on the recharge model is this argument is required or not.
+        It depends on the recharge model if this argument is required or not. The
+        temperature series should be provided in degrees Celsius.
     settings: list of dicts or str, optional
         The settings of the precipitation and evaporation time series, in this order.
         This can be a string referring to a predefined settings dict (defined in
@@ -1007,7 +1060,8 @@ class RechargeModel(StressModelBase):
     evaporation in two steps. In the first step a recharge flux is computed by a
     model determined by the input argument `recharge`. In the second step this
     recharge flux is convoluted with a response function to obtain the contribution
-    of recharge to the groundwater levels.
+    of recharge to the groundwater levels. If a nonlinear recharge model is used, the
+    precipitation should be in mm/d.
 
     Examples
     --------
@@ -1019,6 +1073,14 @@ class RechargeModel(StressModelBase):
     --------
     We recommend not to store a RechargeModel is a variable named `rm`. This name is
     already reserved in IPython to remove files and will cause problems later.
+
+    Raises
+    ------
+    A warning if the the maximum annual precipitation is smaller than 12 and a
+    nonlinear recharge model is applied. This is likely an indication that the units of
+    the precipitation series are in m/d instead of mm/d. Please check the units of the
+    precipitation series.
+
     """
 
     _name = "RechargeModel"
@@ -1102,6 +1164,18 @@ class RechargeModel(StressModelBase):
             self.nsplit = 2
         else:
             self.nsplit = 1
+
+            # Check if precipitation is likely in mm/d and not m/d. If the maximum
+            # value of the annual sums is smaller than 12 (m/d), the highest annual
+            # precipitation in the world, then the precipitation is very likely in m/d
+            # and not in mm/d. In this case a warning is given for nonlinear models.
+
+            if prec.resample("A").sum().max() < 12:
+                msg = (
+                    "The maximum annual precipitation is smaller than 12 m/d. Please "
+                    "double-check if the stresses are in mm/d and not in m/d."
+                )
+                logger.warning(msg)
 
     def set_init_parameters(self) -> None:
         """Internal method to set the initial parameters."""
@@ -1428,6 +1502,7 @@ class TarsoModel(RechargeModel):
                 "pmax": np.NaN,
                 "vary": True,
                 "name": self.name,
+                "dist": "uniform",
             }
         )
         p0.loc[f"{self.name}_d"] = pd0
@@ -1443,6 +1518,7 @@ class TarsoModel(RechargeModel):
                 "pmax": self.dmax,
                 "vary": True,
                 "name": self.name,
+                "dist": "uniform",
             }
         )
         p1.loc[f"{self.name}_d"] = pd1
@@ -1605,10 +1681,10 @@ class ChangeModel(StressModelBase):
             tmax=stress.series.index.max(),
         )
 
-        rfunc1._update_rfunc_settings(up=up)
+        rfunc1.update_rfunc_settings(up=up)
         self.rfunc1 = rfunc1
 
-        rfunc2._update_rfunc_settings(up=up)
+        rfunc2.update_rfunc_settings(up=up)
         self.rfunc2 = rfunc2
         self.tchange = Timestamp(tchange)
 
@@ -1635,6 +1711,7 @@ class ChangeModel(StressModelBase):
             np.inf,
             True,
             self.name,
+            "uniform",
         )
         self.parameters.loc[self.name + "_tchange"] = (
             tchange,
@@ -1642,6 +1719,7 @@ class ChangeModel(StressModelBase):
             tmax,
             False,
             self.name,
+            "uniform",
         )
         self.parameters.name = self.name
 

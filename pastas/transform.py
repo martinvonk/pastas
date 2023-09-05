@@ -18,10 +18,10 @@ class ThresholdTransform:
     Parameters
     ----------
     value : float, optional
-        The starting value above which the simulation is lowered.
+        The initial starting value above which the simulation is lowered.
     vmin : float, optional
         The minimum value above which the simulation is lowered.
-    vmin : float, optional
+    vmax : float, optional
         The maximum value above which the simulation is lowered.
     name: str, optional
         Name of the transform.
@@ -114,6 +114,16 @@ class ThresholdTransform:
         The preferred method for parameter setting is through the model.
         """
         self.parameters.loc[name, "vary"] = bool(value)
+
+    @set_parameter
+    def _set_dist(self, name: str, value: str) -> None:
+        """Internal method to set distribution of prior of the parameter.
+
+        Notes
+        -----
+        The preferred method for parameter setting is through the model.
+        """
+        self.parameters.loc[name, "dist"] = str(value)
 
     def simulate(self, h: Series, p: ArrayLike) -> Series:
         if self.nparam == 1:

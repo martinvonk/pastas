@@ -25,7 +25,7 @@ from .version import check_numba_scipy
 
 try:
     from numba import prange
-except ModuleNotFoundError:
+except ImportError:
     prange = range
 
 # Type Hinting
@@ -55,16 +55,25 @@ class RfuncBase:
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         **kwargs,
     ) -> None:
-        self.up = up
-        self.gain_scale_factor = gain_scale_factor
         self.cutoff = cutoff
+        if "up" in kwargs:
+            raise TypeError(
+                "keyword argument 'up' is not supported in init. "
+                "Set with update_rfunc_settings()."
+            )
+        if "gain_scale_factor" in kwargs:
+            raise TypeError(
+                "keyword argument 'gain_scale_factor' is not supported in "
+                "init. Set with update_rfunc_settings()."
+            )
+        # initialize attributes, these can be set with update_rfunc_settings()
+        self.up = None
+        self.gain_scale_factor = 1.0
 
-    def _update_rfunc_settings(
+    def update_rfunc_settings(
         self,
         up: Optional[bool] = "nochange",
         gain_scale_factor: Optional[float] = None,
@@ -220,7 +229,12 @@ class RfuncBase:
         """
 
     def get_t(
-        self, p: ArrayLike, dt: float, cutoff: float, maxtmax: Optional[int] = None
+        self,
+        p: ArrayLike,
+        dt: float,
+        cutoff: float,
+        maxtmax: Optional[int] = None,
+        warn: bool = True,
     ) -> ArrayLike:
         """Internal method to determine the times at which to evaluate the step
         response, from t=0.
@@ -236,6 +250,9 @@ class RfuncBase:
             proportion after which the step function is cut off.
         maxtmax: float, optional
             The maximum time of the response, usually set to the simulation length.
+        warn : bool, optional
+            only used for HantushWellModel, whether to warn when r is set to 1.0
+            for calculations.
 
         Returns
         -------
@@ -245,7 +262,10 @@ class RfuncBase:
         if isinstance(dt, np.ndarray):
             return dt
         else:
-            tmax = self.get_tmax(p, cutoff)
+            if self._name == "HantushWellModel":
+                tmax = self.get_tmax(p, cutoff, warn=warn)
+            else:
+                tmax = self.get_tmax(p, cutoff)
             if maxtmax is not None:
                 tmax = min(tmax, maxtmax)
             tmax = max(tmax, 3 * dt)
@@ -302,18 +322,16 @@ class Gamma(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.nparam = 3
 
     def get_init_parameters(self, name: str) -> DataFrame:
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
         if self.up:
             parameters.loc[name + "_A"] = (
                 1 / self.gain_scale_factor,
@@ -321,6 +339,7 @@ class Gamma(RfuncBase):
                 100 / self.gain_scale_factor,
                 True,
                 name,
+                "uniform",
             )
         elif self.up is False:
             parameters.loc[name + "_A"] = (
@@ -329,6 +348,7 @@ class Gamma(RfuncBase):
                 -1e-5,
                 True,
                 name,
+                "uniform",
             )
         else:
             parameters.loc[name + "_A"] = (
@@ -337,11 +357,12 @@ class Gamma(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
 
         # if n is too small, the length of response function is close to zero
-        parameters.loc[name + "_n"] = (1, 0.01, 100, True, name)
-        parameters.loc[name + "_a"] = (10, 0.01, 1e4, True, name)
+        parameters.loc[name + "_n"] = (1, 0.01, 100, True, name, "uniform")
+        parameters.loc[name + "_a"] = (10, 0.01, 1e4, True, name, "uniform")
         return parameters
 
     def get_tmax(self, p: ArrayLike, cutoff: Optional[float] = None) -> float:
@@ -398,18 +419,16 @@ class Exponential(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.nparam = 2
 
     def get_init_parameters(self, name: str) -> DataFrame:
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
         if self.up:
             parameters.loc[name + "_A"] = (
                 1 / self.gain_scale_factor,
@@ -417,6 +436,7 @@ class Exponential(RfuncBase):
                 100 / self.gain_scale_factor,
                 True,
                 name,
+                "uniform",
             )
         elif self.up is False:
             parameters.loc[name + "_A"] = (
@@ -425,6 +445,7 @@ class Exponential(RfuncBase):
                 -1e-5,
                 True,
                 name,
+                "uniform",
             )
         else:
             parameters.loc[name + "_A"] = (
@@ -433,9 +454,10 @@ class Exponential(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
 
-        parameters.loc[name + "_a"] = (10, 0.01, 1000, True, name)
+        parameters.loc[name + "_a"] = (10, 0.01, 1000, True, name, "uniform")
         return parameters
 
     def get_tmax(self, p: ArrayLike, cutoff=None) -> float:
@@ -503,16 +525,12 @@ class HantushWellModel(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         use_numba: bool = False,
         quad: bool = False,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.distances = None
         self.nparam = 3
         self.use_numba = use_numba  # requires numba_scipy for real speedups
@@ -535,7 +553,9 @@ class HantushWellModel(RfuncBase):
                     "Hantush."
                 )
             )
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
         if self.up:
             # divide by k0(2) to get same initial value as ps.Hantush
             parameters.loc[name + "_A"] = (
@@ -544,6 +564,7 @@ class HantushWellModel(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
         elif self.up is False:
             # divide by k0(2) to get same initial value as ps.Hantush
@@ -553,6 +574,7 @@ class HantushWellModel(RfuncBase):
                 0,
                 True,
                 name,
+                "uniform",
             )
         else:
             parameters.loc[name + "_A"] = (
@@ -561,27 +583,31 @@ class HantushWellModel(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
-        parameters.loc[name + "_a"] = (100, 1e-3, 1e4, True, name)
+        parameters.loc[name + "_a"] = (100, 1e-3, 1e4, True, name, "uniform")
         # set initial and bounds for b taking into account distances
         # note log transform to avoid tiny values for b
         binit = np.log(1.0 / np.mean(self.distances) ** 2)
         bmin = np.log(1e-6 / np.max(self.distances) ** 2)
         bmax = np.log(25.0 / np.min(self.distances) ** 2)
-        parameters.loc[name + "_b"] = (binit, bmin, bmax, True, name)
+        parameters.loc[name + "_b"] = (binit, bmin, bmax, True, name, "uniform")
         return parameters
 
     @staticmethod
-    def _get_distance_from_params(p: ArrayLike) -> float:
+    def _get_distance_from_params(p: ArrayLike, warn: bool = True) -> float:
         if len(p) == 3:
             r = 1.0
-            logger.info("No distance passed to HantushWellModel, assuming r=1.0.")
+            if warn:
+                logger.info("No distance passed to HantushWellModel, assuming r=1.0.")
         else:
             r = p[3]
         return r
 
-    def get_tmax(self, p: ArrayLike, cutoff: Optional[float] = None) -> float:
-        r = self._get_distance_from_params(p)
+    def get_tmax(
+        self, p: ArrayLike, cutoff: Optional[float] = None, warn: bool = True
+    ) -> float:
+        r = self._get_distance_from_params(p, warn=warn)
         # approximate formula for tmax
         if cutoff is None:
             cutoff = self.cutoff
@@ -661,10 +687,11 @@ class HantushWellModel(RfuncBase):
         dt: float = 1.0,
         cutoff: Optional[float] = None,
         maxtmax: Optional[int] = None,
+        warn: bool = True,
     ) -> ArrayLike:
         A, a, b = p[:3]
-        r = self._get_distance_from_params(p)
-        t = self.get_t(p=p, dt=dt, cutoff=cutoff, maxtmax=maxtmax)
+        r = self._get_distance_from_params(p, warn=warn)
+        t = self.get_t(p=p, dt=dt, cutoff=cutoff, maxtmax=maxtmax, warn=warn)
 
         if self.quad:
             return self.quad_step(A, a, b, r, t)
@@ -795,16 +822,12 @@ class Hantush(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         use_numba: bool = False,
         quad: bool = False,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.nparam = 3
         self.use_numba = use_numba
         self.quad = quad
@@ -816,7 +839,9 @@ class Hantush(RfuncBase):
                 self.use_numba = check_numba_scipy()
 
     def get_init_parameters(self, name: str) -> DataFrame:
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
         if self.up:
             parameters.loc[name + "_A"] = (
                 1 / self.gain_scale_factor,
@@ -824,6 +849,7 @@ class Hantush(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
         elif self.up is False:
             parameters.loc[name + "_A"] = (
@@ -832,6 +858,7 @@ class Hantush(RfuncBase):
                 0,
                 True,
                 name,
+                "uniform",
             )
         else:
             parameters.loc[name + "_A"] = (
@@ -840,9 +867,10 @@ class Hantush(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
-        parameters.loc[name + "_a"] = (100, 1e-3, 1e4, True, name)
-        parameters.loc[name + "_b"] = (1, 1e-6, 25, True, name)
+        parameters.loc[name + "_a"] = (100, 1e-3, 1e4, True, name, "uniform")
+        parameters.loc[name + "_b"] = (1, 1e-6, 25, True, name, "uniform")
         return parameters
 
     def get_tmax(self, p: ArrayLike, cutoff: Optional[float] = None) -> float:
@@ -990,21 +1018,19 @@ class Polder(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.nparam = 3
 
     def get_init_parameters(self, name) -> DataFrame:
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
-        parameters.loc[name + "_A"] = (1, 0, 2, True, name)
-        parameters.loc[name + "_a"] = (10, 0.01, 1000, True, name)
-        parameters.loc[name + "_b"] = (1, 1e-6, 25, True, name)
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
+        parameters.loc[name + "_A"] = (1, 0, 2, True, name, "uniform")
+        parameters.loc[name + "_a"] = (10, 0.01, 1000, True, name, "uniform")
+        parameters.loc[name + "_b"] = (1, 1e-6, 25, True, name, "uniform")
         return parameters
 
     def get_tmax(self, p: ArrayLike, cutoff: Optional[float] = None) -> float:
@@ -1074,18 +1100,16 @@ class One(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.nparam = 1
 
     def get_init_parameters(self, name: str) -> DataFrame:
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
         if self.up:
             parameters.loc[name + "_d"] = (
                 self.gain_scale_factor,
@@ -1093,6 +1117,7 @@ class One(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
         elif self.up is False:
             parameters.loc[name + "_d"] = (
@@ -1101,6 +1126,7 @@ class One(RfuncBase):
                 0,
                 True,
                 name,
+                "uniform",
             )
         else:
             parameters.loc[name + "_d"] = (
@@ -1109,6 +1135,7 @@ class One(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
         return parameters
 
@@ -1171,20 +1198,18 @@ class FourParam(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         quad: bool = False,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.nparam = 4
         self.quad = quad
 
     def get_init_parameters(self, name: str) -> DataFrame:
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
         if self.up:
             parameters.loc[name + "_A"] = (
                 1 / self.gain_scale_factor,
@@ -1192,6 +1217,7 @@ class FourParam(RfuncBase):
                 100 / self.gain_scale_factor,
                 True,
                 name,
+                "uniform",
             )
         elif self.up is False:
             parameters.loc[name + "_A"] = (
@@ -1200,6 +1226,7 @@ class FourParam(RfuncBase):
                 0,
                 True,
                 name,
+                "uniform",
             )
         else:
             parameters.loc[name + "_A"] = (
@@ -1208,11 +1235,12 @@ class FourParam(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
 
-        parameters.loc[name + "_n"] = (1, -10, 10, True, name)
-        parameters.loc[name + "_a"] = (10, 0.01, 5000, True, name)
-        parameters.loc[name + "_b"] = (10, 1e-6, 25, True, name)
+        parameters.loc[name + "_n"] = (1, -10, 10, True, name, "uniform")
+        parameters.loc[name + "_a"] = (10, 0.01, 5000, True, name, "uniform")
+        parameters.loc[name + "_b"] = (10, 1e-6, 25, True, name, "uniform")
         return parameters
 
     @staticmethod
@@ -1385,18 +1413,16 @@ class DoubleExponential(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.nparam = 4
 
     def get_init_parameters(self, name: str) -> DataFrame:
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
         if self.up:
             parameters.loc[name + "_A"] = (
                 1 / self.gain_scale_factor,
@@ -1404,6 +1430,7 @@ class DoubleExponential(RfuncBase):
                 100 / self.gain_scale_factor,
                 True,
                 name,
+                "uniform",
             )
         elif self.up is False:
             parameters.loc[name + "_A"] = (
@@ -1412,6 +1439,7 @@ class DoubleExponential(RfuncBase):
                 0,
                 True,
                 name,
+                "uniform",
             )
         else:
             parameters.loc[name + "_A"] = (
@@ -1420,11 +1448,12 @@ class DoubleExponential(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
 
-        parameters.loc[name + "_alpha"] = (0.1, 0.01, 0.99, True, name)
-        parameters.loc[name + "_a1"] = (10, 0.01, 5000, True, name)
-        parameters.loc[name + "_a2"] = (10, 0.01, 5000, True, name)
+        parameters.loc[name + "_alpha"] = (0.1, 0.01, 0.99, True, name, "uniform")
+        parameters.loc[name + "_a1"] = (10, 0.01, 5000, True, name, "uniform")
+        parameters.loc[name + "_a2"] = (10, 0.01, 5000, True, name, "uniform")
         return parameters
 
     def get_tmax(self, p: ArrayLike, cutoff: Optional[float] = None) -> float:
@@ -1489,20 +1518,18 @@ class Edelman(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.nparam = 1
 
     def get_init_parameters(self, name: str) -> DataFrame:
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
         beta_init = 1.0
-        parameters.loc[name + "_beta"] = (beta_init, 0, 1000, True, name)
+        parameters.loc[name + "_beta"] = (beta_init, 0, 1000, True, name, "uniform")
         return parameters
 
     def get_tmax(self, p: ArrayLike, cutoff: Optional[float] = None) -> float:
@@ -1578,20 +1605,18 @@ class Kraijenhoff(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         n_terms: int = 10,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.nparam = 3
         self.n_terms = n_terms
 
     def get_init_parameters(self, name: str) -> DataFrame:
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
         if self.up:
             parameters.loc[name + "_A"] = (
                 1 / self.gain_scale_factor,
@@ -1599,6 +1624,7 @@ class Kraijenhoff(RfuncBase):
                 100 / self.gain_scale_factor,
                 True,
                 name,
+                "uniform",
             )
         elif self.up is False:
             parameters.loc[name + "_A"] = (
@@ -1607,6 +1633,7 @@ class Kraijenhoff(RfuncBase):
                 -1e-5,
                 True,
                 name,
+                "uniform",
             )
         else:
             parameters.loc[name + "_A"] = (
@@ -1615,10 +1642,11 @@ class Kraijenhoff(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
 
-        parameters.loc[name + "_a"] = (1e2, 0.01, 1e5, True, name)
-        parameters.loc[name + "_b"] = (0, 0, 0.499999, True, name)
+        parameters.loc[name + "_a"] = (1e2, 0.01, 1e5, True, name, "uniform")
+        parameters.loc[name + "_b"] = (0, 0, 0.499999, True, name, "uniform")
         return parameters
 
     def get_tmax(self, p: ArrayLike, cutoff: Optional[float] = None) -> float:
@@ -1723,16 +1751,12 @@ class Spline(RfuncBase):
 
     def __init__(
         self,
-        up: bool = True,
-        gain_scale_factor: float = 1.0,
         cutoff: float = 0.999,
         kind: str = "quadratic",
         t: Optional[list] = None,
         **kwargs,
     ) -> None:
-        RfuncBase.__init__(
-            self, up=up, gain_scale_factor=gain_scale_factor, cutoff=cutoff, **kwargs
-        )
+        RfuncBase.__init__(self, cutoff=cutoff, **kwargs)
         self.kind = kind
         if t is None:
             t = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
@@ -1740,7 +1764,9 @@ class Spline(RfuncBase):
         self.nparam = len(t) + 1
 
     def get_init_parameters(self, name: str) -> DataFrame:
-        parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
+        parameters = DataFrame(
+            columns=["initial", "pmin", "pmax", "vary", "name", "dist"]
+        )
         if self.up:
             parameters.loc[name + "_A"] = (
                 1 / self.gain_scale_factor,
@@ -1748,6 +1774,7 @@ class Spline(RfuncBase):
                 100 / self.gain_scale_factor,
                 True,
                 name,
+                "uniform",
             )
         elif self.up is False:
             parameters.loc[name + "_A"] = (
@@ -1756,6 +1783,7 @@ class Spline(RfuncBase):
                 -1e-5,
                 True,
                 name,
+                "uniform",
             )
         else:
             parameters.loc[name + "_A"] = (
@@ -1764,6 +1792,7 @@ class Spline(RfuncBase):
                 np.nan,
                 True,
                 name,
+                "uniform",
             )
         initial = np.linspace(0.0, 1.0, len(self.t) + 1)[1:]
         for i in range(len(self.t)):
@@ -1772,7 +1801,7 @@ class Spline(RfuncBase):
             # fix the value of the factor at the last timestep to 1.0
             if i == len(self.t) - 1:
                 vary = False
-            parameters.loc[index] = (initial[i], 0.0, 1.0, vary, name)
+            parameters.loc[index] = (initial[i], 0.0, 1.0, vary, name, "uniform")
 
         return parameters
 
