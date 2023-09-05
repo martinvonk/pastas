@@ -1,14 +1,14 @@
+#%%
+from typing import List, Protocol
 from pandas import DataFrame, Series
-from typing import Protocol
+import pandas as pd
+import matplotlib.pyplot as plt
 from numpy import zeros
 
 from pastas.typing import ArrayLike
 
+import flopy
 
-try:
-    import flopy
-except ModuleNotFoundError as e:
-    raise e("Modflow requires 'flopy' to be installed.")
 
 
 class Modflow(Protocol):
@@ -18,46 +18,47 @@ class Modflow(Protocol):
     def get_init_parameters(self) -> DataFrame:
         ...
 
-    def create_model(self) -> flopy.mf6.MFSimulation:
+    def create_model(self) -> None:
         ...
 
     def simulate(self) -> ArrayLike:
         ...
 
-    def get_recharge(self) -> ArrayLike:
-        ...
-
-
+#%%
 class ModflowRch:
-    def __init__(self, initialhead: float, exe_name: str, sim_ws: str):
+
+    def __init__(self, stress: List[Series], initialhead: float, exe_name: str, sim_ws: str):
+        self.stress = stress
         self.initialhead = initialhead
         self.exe_name = exe_name
         self.sim_ws = sim_ws
+        self._name = "mf_rch"
+        self._model = None
 
-    def get_init_parameters(self, name: str = "mf_rch") -> DataFrame:
+    def get_init_parameters(self) -> DataFrame:
         parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
-        parameters.loc[name + "_sy"] = (0.1, 0.001, 0.5, True, name)
-        parameters.loc[name + "_c"] = (0.001, 0.00001, 0.1, True, name)
-        dmean = self.initialhead
-        parameters.loc[name + "_d"] = (dmean, dmean - 10, dmean + 10, True, name)
-        parameters.loc[name + "_f"] = (-1.0, -2.0, 0.0, True, name)
+        parameters.loc[self._name + "_sy"] = (0.1, 0.001, 0.5, True, self._name)
+        parameters.loc[self._name + "_c"] = (0.001, 0.00001, 0.1, True, self._name)
+        parameters.loc[self._name + "_d"] = (self.initialhead, self.initialhead - 10, self.initialhead + 10, True, self._name)
+        parameters.loc[self._name + "_f"] = (-1.0, -2.0, 0.0, True, self._name)
         return parameters
 
     def create_model(
-        self, prec: ArrayLike, evap: ArrayLike, p: ArrayLike
-    ) -> flopy.mf6.MFSimulation:
+        self, p: ArrayLike,
+
+    ) -> None:
+
         sy, c, d, f = p[0:4]
 
         ss = 1.0e-5
         laytyp = 1
 
-        r = prec - f * evap
+        r = self.stress[0] - f * self.stress[1]
 
         nper = len(r)
-        name = "mf_rch"
 
         sim = flopy.mf6.MFSimulation(
-            sim_name=name,
+            sim_name=self._name,
             version="mf6",
             exe_name=self.exe_name,
             sim_ws=self.sim_ws,
@@ -68,7 +69,7 @@ class ModflowRch:
 
         gwf = flopy.mf6.ModflowGwf(
             sim,
-            modelname=name,
+            modelname=self._name,
             newtonoptions="NEWTON",
             save_flows=True,
         )
@@ -90,7 +91,7 @@ class ModflowRch:
             # relaxation_factor=0.97,
             # filename=f"{name}.ims",
         )
-        sim.register_ims_package(imsgwf, [name])
+        sim.register_ims_package(imsgwf, [self._name])
 
         _ = flopy.mf6.ModflowGwfdis(
             gwf,
@@ -131,21 +132,19 @@ class ModflowRch:
             saverecord=[("HEAD", "ALL")],
         )
 
-        rch_spd = [[(0, 0, 0), r[i]] for i in range(nper)]
+        rch_spd = {i: [[(0, 0, 0), r[i]]] for i in range(nper)}
         _ = flopy.mf6.ModflowGwfrch(gwf, stress_period_data=rch_spd, save_flows=True)
 
-        return sim
+        self._model = sim
 
-    def simulate(self, prec: Series, evap: Series, p: ArrayLike) -> ArrayLike:
-        sim = self.create_model(prec.values, evap.values, p)
-        sim.write_simulation(silent=True)
-        success, _ = sim.run_simulation(silent=False)
+    def simulate(self, p: ArrayLike) -> ArrayLike:
+        self.create_model(p=p)
+        self._model.write_simulation(silent=True)
+        success, _ = self._model.run_simulation(silent=False)
         if success:
-            heads = flopy.utils.HeadFile(f"{self.sim_ws}/{sim.name}.hds").get_ts(
+            heads = flopy.utils.HeadFile(self._model.sim_path / f"{self._model.name}.hds").get_ts(
                 (0, 0, 0)
             )
             return heads[:, 1]
         return zeros(prec.shape)
 
-    def get_recharge(self, prec: Series, evap: Series, p: ArrayLike) -> ArrayLike:
-        return prec.values - p[-1] * evap.values
