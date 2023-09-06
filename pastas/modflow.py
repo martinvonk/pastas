@@ -1,7 +1,7 @@
 from typing import List, Protocol
 
 import flopy
-from numpy import zeros
+import numpy as np
 from pandas import DataFrame, Series
 
 from pastas.typing import ArrayLike
@@ -68,10 +68,9 @@ class ModflowRch:
             sim,
             modelname=self._name,
             newtonoptions="NEWTON",
-            save_flows=True,
         )
 
-        _ = flopy.mf6.ModflowIms(
+        imsgwf = flopy.mf6.ModflowIms(
             sim,
             # print_option="SUMMARY",
             complexity="SIMPLE",
@@ -89,7 +88,7 @@ class ModflowRch:
             # filename=f"{name}.ims",
             pname=None,
         )
-        sim.register_ims_package(imsgwf, [self._name])
+        # sim.register_ims_package(imsgwf, [self._name])
 
         _ = flopy.mf6.ModflowGwfdis(
             gwf,
@@ -149,15 +148,23 @@ class ModflowRch:
         )
         ghb.write()
 
-        rch_spd = {i: [[(0, 0, 0), r[i]]] for i in range(self._nper)}
         rch = flopy.mf6.ModflowGwfrch(
             self._gwf,
             maxbound=1,
-            stress_period_data=rch_spd,
-            save_flows=False,
             pname="rch",
+            stress_period_data={0: [[(0, 0, 0), "recharge"]]},
+
+        )
+        rts = [(i, x) for i, x in zip(range(self._nper + 1), np.append(r, 0.0))]
+        rch.ts.initialize(
+            filename="recharge.ts",
+            timeseries=rts,
+            time_series_namerecord="recharge",
+            interpolation_methodrecord="stepwise",
+            sfacrecord=1.1,
         )
         rch.write()
+        rch.ts.write()
 
         self._gwf.name_file.write()
 
@@ -170,4 +177,4 @@ class ModflowRch:
                 self._simulation.sim_path / f"{self._simulation.name}.hds"
             ).get_ts((0, 0, 0))
             return heads[:, 1]
-        return zeros(self.stress[0].shape)
+        return np.zeros(self.stress[0].shape)
