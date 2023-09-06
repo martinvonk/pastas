@@ -1311,7 +1311,7 @@ class Model:
         kwargs = {"tmin": tmin_warm, "tmax": tmax, "freq": freq, "dt": dt}
         if istress is not None:
             kwargs["istress"] = istress
-        contrib = self.stressmodels[name].simulate(p, **kwargs)
+        contrib = self.stressmodels[name].simulate(p=p, **kwargs)
 
         # Respect provided tmin/tmax at this point, since warmup matters for
         # simulation but should not be returned, unless return_warmup=True.
@@ -1885,10 +1885,12 @@ class Model:
         check["len_oseries_calib"] = len_oseries_calib
 
         for sm_name in self.stressmodels:
-            if self.stressmodels[sm_name].rfunc._name == "HantushWellModel":
-                kwargs = {"warn": False}
-            else:
-                kwargs = {}
+            kwargs = {}
+            if (
+                self.stressmodels[sm_name].rfunc is not None
+                and self.stressmodels[sm_name].rfunc._name == "HantushWellModel"
+            ):
+                kwargs["warn"] = False
             check.loc[sm_name, "response_tmax"] = self.get_response_tmax(
                 sm_name, cutoff=cutoff, **kwargs
             )
