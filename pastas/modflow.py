@@ -153,7 +153,6 @@ class ModflowRch:
             maxbound=1,
             pname="rch",
             stress_period_data={0: [[(0, 0, 0), "recharge"]]},
-
         )
         rts = [(i, x) for i, x in zip(range(self._nper + 1), np.append(r, 0.0))]
         rch.ts.initialize(
@@ -162,6 +161,7 @@ class ModflowRch:
             time_series_namerecord="recharge",
             interpolation_methodrecord="stepwise",
             sfacrecord=1.1,
+            pname="rchts",
         )
         rch.write()
         rch.ts.write()
