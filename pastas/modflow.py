@@ -22,23 +22,19 @@ class Modflow(Protocol):
 
 
 class ModflowRch:
-    def __init__(
-        self, stress: List[Series], initialhead: float, exe_name: str, sim_ws: str
-    ):
-        self.stress = stress
+    def __init__(self, initialhead: float, exe_name: str, sim_ws: str):
         self.initialhead = initialhead
         self.exe_name = exe_name
         self.sim_ws = sim_ws
-        self._nper = len(stress[0])
         self._name = "mf_rch"
+        self._stress = None
         self._simulation = None
         self._gwf = None
-        self.create_model()
 
     def get_init_parameters(self) -> DataFrame:
         parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
         parameters.loc[self._name + "_sy"] = (0.1, 0.001, 0.5, True, self._name)
-        parameters.loc[self._name + "_c"] = (0.001, 0.00001, 0.1, True, self._name)
+        parameters.loc[self._name + "_c"] = (1e3, 1e1, 1e8, True, self._name)
         parameters.loc[self._name + "_d"] = (
             self.initialhead,
             self.initialhead - 10,
@@ -70,7 +66,7 @@ class ModflowRch:
             newtonoptions="NEWTON",
         )
 
-        imsgwf = flopy.mf6.ModflowIms(
+        _ = flopy.mf6.ModflowIms(
             sim,
             # print_option="SUMMARY",
             complexity="SIMPLE",
@@ -121,12 +117,14 @@ class ModflowRch:
         ss = 1.0e-5
         laytyp = 1
 
-        r = self.stress[0] - f * self.stress[1]
+        r = self._stress[0] - f * self._stress[1]
 
-        ic = flopy.mf6.ModflowGwfic(self._gwf, strt=d)
+        ic = flopy.mf6.ModflowGwfic(self._gwf, strt=d, pname="ic")
         ic.write()
 
-        npf = flopy.mf6.ModflowGwfnpf(self._gwf, save_flows=False, icelltype=laytyp)
+        npf = flopy.mf6.ModflowGwfnpf(
+            self._gwf, save_flows=False, icelltype=laytyp, pname="npf"
+        )
         npf.write()
 
         sto = flopy.mf6.ModflowGwfsto(
@@ -136,6 +134,7 @@ class ModflowRch:
             ss=ss,
             sy=sy,
             transient=True,
+            pname="sto",
         )
         sto.write()
 
@@ -143,7 +142,7 @@ class ModflowRch:
         ghb = flopy.mf6.ModflowGwfghb(
             self._gwf,
             maxbound=1,
-            stress_period_data={0: [[(0, 0, 0), d, c]]},
+            stress_period_data={0: [[(0, 0, 0), d, 1 / c]]},
             pname="ghb",
         )
         ghb.write()
@@ -168,13 +167,16 @@ class ModflowRch:
 
         self._gwf.name_file.write()
 
-    def simulate(self, p: ArrayLike) -> ArrayLike:
+    def simulate(self, p: ArrayLike, stress: List[Series]) -> ArrayLike:
+        if self._simulation is None:
+            self._stress = stress
+            self._nper = len(self._stress[0])
+            self.create_model()
         self.update_model(p=p)
-        # self._simulation.write_simulation(silent=True)
-        success, _ = self._simulation.run_simulation(silent=False)
+        success, _ = self._simulation.run_simulation(silent=True)
         if success:
             heads = flopy.utils.HeadFile(
                 self._simulation.sim_path / f"{self._simulation.name}.hds"
             ).get_ts((0, 0, 0))
             return heads[:, 1]
-        return np.zeros(self.stress[0].shape)
+        return np.zeros(self._stress[0].shape)
