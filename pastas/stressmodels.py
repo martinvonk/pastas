@@ -1835,7 +1835,7 @@ class ModflowModel(StressModelBase):
 
     def set_init_parameters(self) -> None:
         """Set the initial parameters back to their default values."""
-        self.parameters = self.modflow.get_init_parameters()
+        self.parameters = self.modflow.get_init_parameters(self.name)
 
     def to_dict(self, series: bool = True) -> dict:
         pass

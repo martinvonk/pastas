@@ -22,8 +22,8 @@ class Modflow(Protocol):
 
 
 class ModflowRch:
-    def __init__(self, initialhead: float, exe_name: str, sim_ws: str):
-        self.initialhead = initialhead
+    def __init__(self, exe_name: str, sim_ws: str):
+        # self.initialhead = initialhead
         self.exe_name = exe_name
         self.sim_ws = sim_ws
         self._name = "mf_rch"
@@ -31,18 +31,18 @@ class ModflowRch:
         self._simulation = None
         self._gwf = None
 
-    def get_init_parameters(self) -> DataFrame:
+    def get_init_parameters(self, name: str) -> DataFrame:
         parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
-        parameters.loc[self._name + "_sy"] = (0.1, 0.001, 0.5, True, self._name)
-        parameters.loc[self._name + "_c"] = (1e3, 1e1, 1e8, True, self._name)
-        parameters.loc[self._name + "_d"] = (
-            self.initialhead,
-            self.initialhead - 10,
-            self.initialhead + 10,
-            True,
-            self._name,
-        )
-        parameters.loc[self._name + "_f"] = (-1.0, -2.0, 0.0, True, self._name)
+        parameters.loc[name + "_sy"] = (0.1, 0.001, 0.5, True, name)
+        parameters.loc[name + "_c"] = (1e3, 1e1, 1e8, True, name)
+        # parameters.loc[name + "_d"] = (
+        #     self.initialhead,
+        #     self.initialhead - 10,
+        #     self.initialhead + 10,
+        #     True,
+        #     name,
+        # )
+        parameters.loc[name + "_f"] = (-1.0, -2.0, 0.0, True, name)
         return parameters
 
     def create_model(self) -> None:
@@ -94,8 +94,8 @@ class ModflowRch:
             ncol=1,
             delr=1,
             delc=1,
-            top=self.initialhead + 10,
-            botm=self.initialhead - 10,
+            top=10,
+            botm=-10,
             idomain=1,
             pname=None,
         )
@@ -112,8 +112,9 @@ class ModflowRch:
         self._gwf = gwf
 
     def update_model(self, p: ArrayLike):
-        sy, c, d, f = p[0:4]
+        sy, c, f = p[0:3]
 
+        d = 0
         ss = 1.0e-5
         laytyp = 1
 
