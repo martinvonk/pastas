@@ -30,6 +30,7 @@ class ModflowRch:
         self._stress = None
         self._simulation = None
         self._gwf = None
+        self._changing_packages = ("IC", "NPF", "STO", "GHB", "RCH")
 
     def get_init_parameters(self, name: str) -> DataFrame:
         parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
@@ -115,10 +116,15 @@ class ModflowRch:
         sy, c, f = p[0:3]
 
         d = 0
-        ss = 1.0e-5
         laytyp = 1
 
-        r = self._stress[0] - f * self._stress[1]
+        r = self._stress[0] + f * self._stress[1]
+
+        # remove existing packages
+        if all(
+            [True for x in self._gwf.get_package_list() if x in self._changing_packages]
+        ):
+            [self._gwf.remove_package(x) for x in self._changing_packages]
 
         ic = flopy.mf6.ModflowGwfic(self._gwf, strt=d, pname="ic")
         ic.write()
@@ -132,7 +138,6 @@ class ModflowRch:
             self._gwf,
             save_flows=False,
             iconvert=laytyp,
-            ss=ss,
             sy=sy,
             transient=True,
             pname="sto",
@@ -148,20 +153,21 @@ class ModflowRch:
         )
         ghb.write()
 
+        rts = [(i, x) for i, x in zip(range(self._nper + 1), np.append(r, 0.0))]
+
+        ts_dict = {
+            "filename": "recharge.ts",
+            "timeseries": rts,
+            "time_series_namerecord": ["recharge"],
+            "interpolation_methodrecord": ["stepwise"],
+        }
+
         rch = flopy.mf6.ModflowGwfrch(
             self._gwf,
             maxbound=1,
             pname="rch",
             stress_period_data={0: [[(0, 0, 0), "recharge"]]},
-        )
-        rts = [(i, x) for i, x in zip(range(self._nper + 1), np.append(r, 0.0))]
-        rch.ts.initialize(
-            filename="recharge.ts",
-            timeseries=rts,
-            time_series_namerecord="recharge",
-            interpolation_methodrecord="stepwise",
-            sfacrecord=1.1,
-            pname="rchts",
+            timeseries=ts_dict,
         )
         rch.write()
         rch.ts.write()
