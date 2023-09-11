@@ -34,15 +34,8 @@ class ModflowRch:
 
     def get_init_parameters(self, name: str) -> DataFrame:
         parameters = DataFrame(columns=["initial", "pmin", "pmax", "vary", "name"])
-        parameters.loc[name + "_sy"] = (0.1, 0.001, 0.5, True, name)
-        parameters.loc[name + "_c"] = (1e3, 1e1, 1e8, True, name)
-        # parameters.loc[name + "_d"] = (
-        #     self.initialhead,
-        #     self.initialhead - 10,
-        #     self.initialhead + 10,
-        #     True,
-        #     name,
-        # )
+        parameters.loc[name + "_sy"] = (0.05, 0.001, 0.5, True, name)
+        parameters.loc[name + "_c"] = (220, 1e1, 1e8, True, name)
         parameters.loc[name + "_f"] = (-1.0, -2.0, 0.0, True, name)
         return parameters
 
@@ -95,8 +88,8 @@ class ModflowRch:
             ncol=1,
             delr=1,
             delc=1,
-            top=10,
-            botm=-10,
+            top=1000,
+            botm=-1000,
             idomain=1,
             pname=None,
         )
